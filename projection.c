@@ -57,7 +57,7 @@ typedef struct double3 {
   double z;
 } double3;
 
-enum CameraMode { FRONT, FRONT235, BACK, UP, DOWN, SAMSUNG_GEAR_360, THETAS };
+enum CameraMode { FRONT, FRONT235, BACK, UP, DOWN, SAMSUNG_GEAR_360, THETAS, INSTA_360_AIR };
 
 typedef struct configuration {
   char *xmap_filename;
@@ -172,6 +172,8 @@ configuration parse_options(int argc, char **argv) {
         po.mode = SAMSUNG_GEAR_360;
       } else if (strcmp(optarg, "thetas") == 0) {
         po.mode = THETAS;
+      } else if (strcmp(optarg, "insta_360_air") == 0) {
+        po.mode = INSTA_360_AIR;
       }
       /* more else if clauses */
       else /* default: */
@@ -215,6 +217,9 @@ configuration parse_options(int argc, char **argv) {
       break;
     case THETAS:
       printf("Camera: Theta S\n");
+      break;
+    case INSTA_360_AIR:
+      printf("Camera: Insta 360 Air\n");
       break;
     default:
       printf("Camera mode not in verbose, exiting\n");
@@ -390,6 +395,49 @@ void gen_samsung_gear_360_maps(configuration cfg, int **image_x,
       image_x[y][x + cfg.cols / 2] = (int)round(o.x) + cfg.crop + cfg.width / 2;
       image_y[y][x] = (int)round(o.y) + cfg.crop;
       image_y[y][x + cfg.cols / 2] = (int)round(o.y) + cfg.crop;
+    }
+  }
+}
+
+void gen_insta_360_air_maps(configuration cfg, int **image_x,
+                            int **image_y) {
+  int x, y;
+  // two circles, but with overlap/crop
+  // idear: rescale the x,y square. So circel should be smaller (2*crop) than
+  // actual image size.
+  // so srcSize in 2 dimensions is: - 2*crop
+  // and translate with 1* crop for left and 2* crop for right
+  printf("insta_360_air with crop %i\n", cfg.crop);
+
+  for (y = 0; y < cfg.rows; y++) {
+    for (x = 0; x < cfg.cols / 2; x++) {
+      double2 outCoord = (double2){((double)x / ((double)cfg.cols / 2)) *
+                                   ((cfg.width / 2) - (2 * cfg.crop)),
+                                   ((double)y / (double)cfg.rows) *
+                                   ((cfg.height) - (2 * cfg.crop))};
+      double2 srcSize = (double2){(cfg.width / 2) - (2 * cfg.crop),
+                                  cfg.height - (2 * cfg.crop)};
+      double2 o = evaluatePixel_Front(outCoord, srcSize);
+
+      if (o.x < 0)
+        o.x = 0;
+      if (o.y < 0)
+        o.y = 0;
+      if (o.x >= cfg.width / 2)
+        o.x = (cfg.width / 2) - 1;
+      if (o.y >= cfg.height)
+        o.y = cfg.height - 1;
+
+      // Shift the output by 1/4 width so the seam is not in the middle of the frame
+      int outXLeft = (x + cfg.cols / 4) % cfg.cols;
+      int outXRight = (x + 3 * cfg.cols / 4) % cfg.cols;
+
+      // crop on outsides
+      // for samsung gear 360 it should be ~38
+      image_x[y][outXLeft] = (int)round(o.x) + cfg.crop;
+      image_x[y][outXRight] = ((int)round(o.x) + cfg.crop + cfg.width / 2);
+      image_y[y][outXLeft] = (int)round(o.y) + cfg.crop;
+      image_y[y][outXRight] = (int)round(o.y) + cfg.crop;
     }
   }
 }
@@ -627,6 +675,9 @@ int main(int argc, char **argv) {
     break;
   case THETAS:
     gen_thetas_maps(cfg, image_x, image_y);
+    break;
+  case INSTA_360_AIR:
+    gen_insta_360_air_maps(cfg, image_x, image_y);
     break;
   default:
     printf("Camera mode not implemented\n");
