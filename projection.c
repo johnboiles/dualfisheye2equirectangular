@@ -305,6 +305,26 @@ int pgmWrite_ASCII(char *filename, int rows, int cols, int **image,
   return (1);
 }
 
+double2 evaluatePixelMagic(double3 worldPos, double2 srcSize, double2 relativeOffset, double2 relativeSize, double rotation) {
+  double extent = (237.25f * (M_PI / 180.0f)) * 0.5f;
+
+  double thetaL = atan2(worldPos.y, worldPos.x) + rotation;
+  double nradiusL = 2.0f*sin(acos(worldPos.z)*0.75f) / (extent);
+  double2 texDirL = (double2){cos(thetaL), sin(thetaL)};
+  double2 texPosL;
+  texPosL.x = texDirL.x * nradiusL;
+  texPosL.y = texDirL.y * nradiusL;
+
+  double2 pL;
+  pL.x = -texPosL.x * relativeSize.x + relativeOffset.x;
+  pL.y = -texPosL.y * relativeSize.y + relativeOffset.y;
+
+  pL.x *= srcSize.x;
+  pL.y *= srcSize.y;
+
+  return pL;
+}
+
 /* So, to get the x’,y’ position for the circular image we will have to first
  * pass the
  * coordinates x,y from the rectangular output image to spherical coordinates
@@ -314,12 +334,10 @@ int pgmWrite_ASCII(char *filename, int rows, int cols, int **image,
  * then those to the polar projection and then pass the polar system to cardinal
  * x’,y’.
  */
-double2 evaluatePixel_Front(double2 outCoord, double2 srcSize) {
+double2 evaluatePixel_Front(double2 outCoord, double2 srcSize, double2 relativeOffset, double2 relativeSize, double rotation) {
   double2 o;
   double theta, phi;
   double3 sphericCoords;
-  double phi2_over_pi;
-  double theta2;
   double2 inCentered;
 
   // convert outcoords to radians (180 = pi, so half a sphere)
@@ -330,15 +348,10 @@ double2 evaluatePixel_Front(double2 outCoord, double2 srcSize) {
 
   // Convert outcoords to spherical (x,y,z on unisphere)
   sphericCoords.x = cos(theta) * sin(phi);
-  sphericCoords.y = sin(theta) * sin(phi);
-  sphericCoords.z = cos(phi);
+  sphericCoords.z = sin(theta) * sin(phi);
+  sphericCoords.y = cos(phi);
 
-  // Convert spherical to input coordinates...
-  theta2 = atan2(-sphericCoords.z, sphericCoords.x);
-  phi2_over_pi = acos(sphericCoords.y) / (M_PI);
-
-  inCentered.x = ((phi2_over_pi * cos(theta2)) + 0.5) * srcSize.x;
-  inCentered.y = ((phi2_over_pi * sin(theta2)) + 0.5) * srcSize.y;
+  inCentered = evaluatePixelMagic(sphericCoords, srcSize, relativeOffset, relativeSize, rotation);
 
   return inCentered;
 }
@@ -353,7 +366,7 @@ void gen_front_maps(configuration cfg, int **image_x, int **image_y) {
           (double2){
               ((double)x / ((double)cfg.cols)) * ((cfg.width) - (2 * cfg.crop)),
               ((double)y / (double)cfg.rows) * ((cfg.height) - (2 * cfg.crop))},
-          (double2){(cfg.width) - (2 * cfg.crop), cfg.height - (2 * cfg.crop)});
+          (double2){(cfg.width) - (2 * cfg.crop), cfg.height - (2 * cfg.crop)}, (double2){0, 0}, (double2){0, 0}, 0);
       image_x[y][x] = (int)round(o.x) + cfg.crop;
       image_y[y][x] = (int)round(o.y) + cfg.crop;
     }
@@ -379,7 +392,7 @@ void gen_samsung_gear_360_maps(configuration cfg, int **image_x,
                                         ((double)y / (double)cfg.rows) *
                                             ((cfg.height) - (2 * cfg.crop))},
                               (double2){(cfg.width / 2) - (2 * cfg.crop),
-                                        cfg.height - (2 * cfg.crop)});
+                                        cfg.height - (2 * cfg.crop)}, (double2){0, 0}, (double2){0, 0}, 0);
       if (o.x < 0)
         o.x = 0;
       if (o.y < 0)
@@ -399,45 +412,34 @@ void gen_samsung_gear_360_maps(configuration cfg, int **image_x,
   }
 }
 
-void gen_insta_360_air_maps(configuration cfg, int **image_x,
-                            int **image_y) {
-  int x, y;
-  // two circles, but with overlap/crop
-  // idear: rescale the x,y square. So circel should be smaller (2*crop) than
-  // actual image size.
-  // so srcSize in 2 dimensions is: - 2*crop
-  // and translate with 1* crop for left and 2* crop for right
-  printf("insta_360_air with crop %i\n", cfg.crop);
+void gen_insta_360_air_maps(configuration cfg, int **image_x, int **image_y) {
+  for (int y = 0; y < cfg.rows; y++) {
+    for (int x = 0; x < cfg.cols; x++) {
+      double2 srcSize = (double2){(cfg.width / 2), cfg.height};
+      double2 inputPoint;
+      if (x < cfg.cols / 2) {
+        inputPoint = evaluatePixel_Front((double2){x, y}, srcSize, (double2){0.4986213235, 0.5013786765}, (double2){0.516084559, 0.5160845588}, 0);
+      } else {
+        inputPoint = evaluatePixel_Front((double2){x - cfg.cols / 2, y}, srcSize, (double2){0.495863971, 0.5013786765}, (double2){0.513327206, 0.5133272059}, 0.05);
+        inputPoint.x += cfg.width / 2;
+      }
 
-  for (y = 0; y < cfg.rows; y++) {
-    for (x = 0; x < cfg.cols / 2; x++) {
-      double2 outCoord = (double2){((double)x / ((double)cfg.cols / 2)) *
-                                   ((cfg.width / 2) - (2 * cfg.crop)),
-                                   ((double)y / (double)cfg.rows) *
-                                   ((cfg.height) - (2 * cfg.crop))};
-      double2 srcSize = (double2){(cfg.width / 2) - (2 * cfg.crop),
-                                  cfg.height - (2 * cfg.crop)};
-      double2 o = evaluatePixel_Front(outCoord, srcSize);
-
-      if (o.x < 0)
-        o.x = 0;
-      if (o.y < 0)
-        o.y = 0;
-      if (o.x >= cfg.width / 2)
-        o.x = (cfg.width / 2) - 1;
-      if (o.y >= cfg.height)
-        o.y = cfg.height - 1;
+      // Constrain values
+      if (inputPoint.x < 0)
+        inputPoint.x = 0;
+      if (inputPoint.y < 0)
+        inputPoint.y = 0;
+      if (inputPoint.x >= cfg.width)
+        inputPoint.x = cfg.width - 1;
+      if (inputPoint.y >= cfg.height)
+        inputPoint.y = cfg.height - 1;
 
       // Shift the output by 1/4 width so the seam is not in the middle of the frame
-      int outXLeft = (x + cfg.cols / 4) % cfg.cols;
-      int outXRight = (x + 3 * cfg.cols / 4) % cfg.cols;
+      x = (x + cfg.cols / 4) % cfg.cols;
 
-      // crop on outsides
-      // for samsung gear 360 it should be ~38
-      image_x[y][outXLeft] = (int)round(o.x) + cfg.crop;
-      image_x[y][outXRight] = ((int)round(o.x) + cfg.crop + cfg.width / 2);
-      image_y[y][outXLeft] = (int)round(o.y) + cfg.crop;
-      image_y[y][outXRight] = (int)round(o.y) + cfg.crop;
+      // HACK, not sure why we had to reverse these here
+      image_x[y][cfg.cols - x - 1] = (int)round(inputPoint.x);
+      image_y[y][cfg.cols - x - 1] = (int)round(inputPoint.y);
     }
   }
 }
@@ -466,7 +468,7 @@ void gen_thetas_maps(configuration cfg, int **image_x, int **image_y) {
                                         ((double)y / (double)cfg.rows) *
                                             ((cfg.height) - (2 * cfg.crop))},
                               (double2){(cfg.width / 2) - (2 * cfg.crop),
-                                        cfg.height - (2 * cfg.crop)});
+                                        cfg.height - (2 * cfg.crop)}, (double2){0, 0}, (double2){0, 0}, 0);
       if (o.x < 0)
         o.x = 0;
       if (o.y < 0)
@@ -635,7 +637,7 @@ void gen_front235_maps(configuration cfg, int **image_x, int **image_y) {
           (double2){
               ((double)x / ((double)cfg.cols)) * ((cfg.width) - (2 * cfg.crop)),
               ((double)y / (double)cfg.rows) * ((cfg.height) - (2 * cfg.crop))},
-          (double2){(cfg.width) - (2 * cfg.crop), cfg.height - (2 * cfg.crop)});
+          (double2){(cfg.width) - (2 * cfg.crop), cfg.height - (2 * cfg.crop)}, (double2){0, 0}, (double2){0, 0}, 0);
       image_x[y][x] = (int)round(o.x) + cfg.crop;
       image_y[y][x] = (int)round(o.y) + cfg.crop;
     }
